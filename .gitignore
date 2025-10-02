@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.streamlit/
+web_outputs/
+*.ply
+*.pyc
+.DS_Store
+.vscode/
+.idea/
