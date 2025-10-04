@@ -48,6 +48,8 @@ with st.sidebar:
     refine = st.selectbox("Edge Refinement", ["none", "bilateral", "guided"], index=0)
     scale = st.number_input("Depth scale factor (for PLY Z)", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
     max_res = st.slider("Max input resolution (long side, px)", min_value=480, max_value=2048, value=960, step=64)
+    preview_points = st.slider("Preview points (downsample)", min_value=5000, max_value=100000, value=20000, step=5000)
+    marker_size = st.slider("Marker size", min_value=1.0, max_value=4.0, value=1.6, step=0.2)
 
 uploaded = st.file_uploader("Choose an image", type=["jpg","jpeg","png","bmp","tif","tiff"]) 
 
@@ -93,34 +95,40 @@ if uploaded is not None:
 
             # Build PLY
             points, colors = create_3d_point_cloud(img_np, depth_map, scale=scale)
+            # Filter out non-finite points to ensure plotting works
+            mask = np.isfinite(points).all(axis=1)
+            if mask.sum() == 0:
+                st.error("No valid 3D points to display. Try a different image or settings.")
+                st.stop()
+            points = points[mask]
+            colors = colors[mask]
 
-            # Optional interactive 3D preview (downsampled for performance)
-            show_preview = st.checkbox("Show 3D preview (Plotly)", value=False)
-            if show_preview:
-                with st.spinner("Rendering 3D preview..."):
-                    n = points.shape[0]
-                    k = min(20000, n)
-                    if k < n:
-                        idx = np.random.choice(n, size=k, replace=False)
-                        pts = points[idx]
-                        cols = (colors[idx] * 255).clip(0,255).astype(np.uint8)
-                    else:
-                        pts = points
-                        cols = (colors * 255).clip(0,255).astype(np.uint8)
-                    color_str = [f'rgb({int(r)},{int(g)},{int(b)})' for r, g, b in cols]
-                    fig = go.Figure(data=[
-                        go.Scatter3d(
-                            x=pts[:,0], y=pts[:,1], z=pts[:,2],
-                            mode='markers',
-                            marker=dict(size=1.8, color=color_str, opacity=0.9)
-                        )
-                    ])
-                    fig.update_layout(
-                        scene=dict(aspectmode='data', xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
-                        margin=dict(l=0, r=0, b=0, t=0),
-                        height=600,
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+            # Interactive 3D preview (downsampled for performance)
+            # Build a reduced set for both preview and static export
+            n = points.shape[0]
+            k = min(preview_points, n)
+            if k < n:
+                idx = np.random.choice(n, size=k, replace=False)
+                pts_small = points[idx]
+                cols_small = (colors[idx] * 255).clip(0,255).astype(np.uint8)
+            else:
+                pts_small = points
+                cols_small = (colors * 255).clip(0,255).astype(np.uint8)
+            color_str_small = [f'rgb({int(r)},{int(g)},{int(b)})' for r, g, b in cols_small]
+            fig = go.Figure(data=[
+                go.Scatter3d(
+                    x=pts_small[:,0], y=pts_small[:,1], z=pts_small[:,2],
+                    mode='markers',
+                    marker=dict(size=marker_size, color=color_str_small, opacity=0.9)
+                )
+            ])
+            fig.update_layout(
+                scene=dict(aspectmode='data', xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
+                margin=dict(l=0, r=0, b=0, t=0),
+                height=600,
+            )
+            with st.spinner("Rendering 3D preview..."):
+                st.plotly_chart(fig, use_container_width=True)
             out_dir = os.path.join(HERE, "web_outputs")
             os.makedirs(out_dir, exist_ok=True)
             stem = str(uuid.uuid4())
@@ -144,8 +152,20 @@ if uploaded is not None:
                     for (x,y,z), (r,g,b) in zip(points, cols):
                         f.write(f"{x} {y} {z} {int(r)} {int(g)} {int(b)}\n")
 
+            # Save static 3D image (PNG) using kaleido
+            png_path = os.path.join(out_dir, f"{stem}.png")
+            try:
+                fig.write_image(png_path, format="png", scale=2)
+            except Exception as e:
+                # If kaleido missing or error, skip silently
+                png_path = None
+
             st.success("Done!")
             with open(ply_path, "rb") as f:
                 st.download_button("Download PLY", f, file_name="point_cloud.ply", mime="application/octet-stream")
+            if png_path and os.path.exists(png_path):
+                st.image(png_path, caption="3D Point Cloud (static)", use_column_width=True)
+                with open(png_path, "rb") as f:
+                    st.download_button("Download 3D PNG", f, file_name="point_cloud.png", mime="image/png")
 else:
     st.info("Upload an image to begin.")
